@@ -1,20 +1,24 @@
-var ctx, nodeCount = 0, treeRoot, allNodes = [];
+var ctx, treeRoot, allNodes = {}, center, gui, holdingNode = false;
 
-var koeff = {
-    spring: 20,
-    repulsion: 0.1,
-    mass: 0.01
+var settings = {
+    spring: 60,
+    repulsion: 0.0001,
+    limit: 0.6,
+    mass: 1000,
+    center: 0,
+    springLen: 0.01,
+    isRepulsing: true,
+    mouseRadius: 8
 };
 
 class TreeNode {
-    constructor(name) {
+    constructor(id, name) {
         this.parent = false;
-        this.id = nodeCount++;
+        this.id = id;
         this.name = name;
         this.children = [];
         this.pos = new Vector(Math.random(), Math.random());
-        this.vel = new Vector();
-        allNodes.push(this);
+        this.force = new Vector();
     }
 
     addChild(child) {
@@ -118,56 +122,101 @@ function h(y) {
     return y * window.innerHeight;
 }
 
-function drawNode(node) {
-    ctx.strokeText(node.name, w(node.pos.x), h(node.pos.y));
+function drawNode(node, isRoot) {
+    if (node === holdingNode) {
+        ctx.strokeStyle = '#00F';
+    } else if (node === treeRoot) {
+        ctx.strokeStyle = '#F00';
+    } else {
+        ctx.strokeStyle = '#000';
+    }
+    // ctx.strokeText(node.name, w(node.pos.x), h(node.pos.y));
     ctx.beginPath();
-    ctx.ellipse(w(node.pos.x), h(node.pos.y), 5, 5, 0, 0, 2 * Math.PI);
+    ctx.ellipse(w(node.pos.x), h(node.pos.y), 3, 3, 0, 0, 2 * Math.PI);
     ctx.stroke();
     for (const i in node.children) {
+        ctx.strokeStyle = isRoot ? '#F00' : '#000';
         ctx.beginPath();
         ctx.moveTo(w(node.pos.x), h(node.pos.y));
         ctx.lineTo(w(node.children[i].pos.x), h(node.children[i].pos.y));
         ctx.stroke();
 
-        drawNode(node.children[i]);
+        drawNode(node.children[i], false);
     }
 }
 
-function simulatePhysics(node) {
-    let force = new Vector();
+function simulatePhysics() {
+    for (const j in allNodes) {
+        const node = allNodes[j];
+        const centerDir = center.sub(node.pos);
 
-    for (const i in allNodes) {
-        const dist = node.distance(allNodes[i]);
-        const r = allNodes[i].pos.sub(node.pos);
+        node.force.add_(centerDir.unit().mul_(settings.center * Math.max(Math.abs(centerDir.x), Math.abs(centerDir.y))));
 
-        if (dist === 1) {
-            force.add_(r.mul(koeff.spring));
-        } else {
+        for (const i in allNodes) {
+            if (i >= j) {
+                continue;
+            }
+            const r = allNodes[i].pos.sub(node.pos);
             const len = r.len();
-            force.add_(r.mul(-1/(len*len*len) * koeff.repulsion));
+
+            if ((node.parent === allNodes[i]) || (node === allNodes[i].parent)) {
+                const diff = len - settings.springLen;
+                const s = r.unit().mul_(diff * settings.spring);
+
+                node.force.add_(s);
+                allNodes[i].force.sub_(s);
+            } else if (settings.isRepulsing && len < settings.limit) {
+                const s = r.mul_(-settings.repulsion / (len * len * len));
+
+                node.force.add_(s);
+                allNodes[i].force.sub_(s);
+            }
         }
     }
-
-    for (const i in node.children) {
-        simulatePhysics(node.children[i]);
-    }
-
-    node.force = force;
 }
 
 function applyForces() {
     for (const i in allNodes) {
-        allNodes[i].pos.add_(allNodes[i].force.mul(koeff.mass));
-        // allNodes[i].vel.add_(allNodes[i].force.mul(koeff.mass));
-        // allNodes[i].pos.add_(allNodes[i].vel);
+        if (allNodes[i] !== holdingNode) {
+            allNodes[i].pos.add_(allNodes[i].force.div(settings.mass));
+            // allNodes[i].vel.add_(allNodes[i].force.mul(settings.mass));
+            // allNodes[i].pos.add_(allNodes[i].vel);
+        }
+
+        allNodes[i].force.x = 0;
+        allNodes[i].force.y = 0;
     }
 }
 
 function step() {
-    simulatePhysics(treeRoot);
+    simulatePhysics();
     applyForces();
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    drawNode(treeRoot);
+    drawNode(treeRoot, true);
+}
+
+function onMouseDown(e) {
+    const mouse = new Vector(e.pageX, e.pageY);
+    for (const i in allNodes) {
+        let pos = new Vector(w(allNodes[i].pos.x), h(allNodes[i].pos.y));
+        if (pos.sub_(mouse).len() <= settings.mouseRadius) {
+            holdingNode = allNodes[i];
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            return;
+        }
+    }
+}
+
+function onMouseMove(e) {
+    holdingNode.pos.x = e.pageX / window.innerWidth;
+    holdingNode.pos.y = e.pageY / window.innerHeight;
+}
+
+function onMouseUp(e) {
+    holdingNode = false;
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
 }
 
 function init() {
@@ -177,30 +226,48 @@ function init() {
     canvas.height = window.innerHeight;
 
     ctx = canvas.getContext('2d');
+    center = new Vector(0.5, 0.5);
+
+    gui = new dat.GUI();
+
+    for (const n in settings) {
+        gui.add(settings, n);
+    }
+
+    window.addEventListener('mousedown', onMouseDown);
 }
 
-function createTree() {
-    treeRoot = new TreeNode('root');
+function createNode(id) {
+    if (allNodes[id]) {
+        return allNodes[id];
+    }
 
-    let ch1 = treeRoot.addChild(new TreeNode('node1'));
+    allNodes[id] = new TreeNode(id, TREE_DATA[id].name);
+    allNodes[id].pos.x = TREE_DATA[id].x;
+    allNodes[id].pos.y = TREE_DATA[id].y;
 
-    ch1.addChild(new TreeNode('node1-1'));
-    ch1.addChild(new TreeNode('node1-2'));
-    ch1.addChild(new TreeNode('node1-3')).addChild(new TreeNode('node1-3-1'));
+    if (TREE_DATA[id].parent) {
+        createNode(TREE_DATA[id].parent).addChild(allNodes[id]);
+    } else {
+        treeRoot = allNodes[id];
+    }
 
-    let ch2 = treeRoot.addChild(new TreeNode('node2'));
+    return allNodes[id];
+}
 
-    ch2.addChild(new TreeNode('node2-1'));
-    ch2.addChild(new TreeNode('node2-2'));
+function loadTree() {
+    for (const id in TREE_DATA) {
+        createNode(id);
+    }
 }
 
 function main() {
-    drawNode(treeRoot);
+    drawNode(treeRoot, true);
 }
 
 window.onload = function () {
     init();
-    createTree();
+    loadTree();
     main();
-    setInterval(step, 50);
+    setInterval(step, 1);
 };
